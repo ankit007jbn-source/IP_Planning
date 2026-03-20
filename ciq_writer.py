@@ -1,80 +1,74 @@
-from openpyxl import Workbook
+from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill
+import shutil
 
 
-def write_section(ws, title, subnet, records, start_row,
-                  gateway_ip=None, broadcast_ip=None):
+def write_ciq(input_file, output_file,
+              sb_subnet, vmotion_subnet,
+              sb_records, vmotion_records,
+              gateway_ip, broadcast_ip,
+              vm_config_records=None):
+    """
+    Create output Excel file:
+    - Keep original sheet as first tab
+    - Add CIQ tab
+    - Add VM Configuration tab (if VMware)
+    """
 
-    ws[f"A{start_row}"] = f"{title} VLAN: {subnet}"
-    ws[f"A{start_row}"].font = Font(bold=True)
+    shutil.copy(input_file, output_file)
+
+    wb = load_workbook(output_file)
+
+    # ---------------- CIQ TAB ----------------
+    ws = wb.create_sheet("CIQ")  # Added AFTER original sheet
 
     headers = ["IP Address", "Hostname", "Description", "VLAN Name"]
-    header_row = start_row + 1
 
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=header_row, column=col)
-        cell.value = header
+    ws["A1"] = f"VM_Network_SB VLAN: {sb_subnet}"
+
+    for i, h in enumerate(headers, 1):
+        cell = ws.cell(row=2, column=i)
+        cell.value = h
+        cell.fill = PatternFill(start_color="92D050", fill_type="solid")
         cell.font = Font(bold=True)
-        cell.fill = PatternFill(start_color="92D050",
-                                end_color="92D050",
-                                fill_type="solid")
-
-    row = header_row + 1
 
     # Gateway
-    if gateway_ip:
-        ws.cell(row=row, column=1).value = gateway_ip
-        ws.cell(row=row, column=2).value = "Gateway"
-        ws.cell(row=row, column=3).value = "Default Gateway"
-        ws.cell(row=row, column=4).value = title
-        row += 1
+    ws.append([gateway_ip, "Gateway", "Default Gateway", "VM_Network_SB"])
 
     # VM records
-    for record in records:
-        ws.cell(row=row, column=1).value = record["IP Address"]
-        ws.cell(row=row, column=2).value = record["Hostname"]
-        ws.cell(row=row, column=3).value = record["Description"]
-        ws.cell(row=row, column=4).value = record["VLAN Name"]
-        row += 1
+    for r in sb_records:
+        ws.append([
+            r["IP Address"],
+            r["Hostname"],
+            r["Description"],
+            r["VLAN Name"]
+        ])
 
-    # Broadcast (only for SB section)
-    if broadcast_ip:
-        ws.cell(row=row, column=1).value = broadcast_ip
-        ws.cell(row=row, column=2).value = "Broadcast"
-        ws.cell(row=row, column=3).value = "Broadcast Address"
-        ws.cell(row=row, column=4).value = title
-        row += 1
+    # Broadcast
+    ws.append([broadcast_ip, "Broadcast", "Broadcast Address", "VM_Network_SB"])
 
-    return row + 2
+    # ---------------- VM CONFIG TAB ----------------
+    if vm_config_records:
 
+        ws2 = wb.create_sheet("VM Configuration Sheet")
 
-def write_ciq(output_path, sb_subnet, vmotion_subnet,
-              sb_records, vmotion_records,
-              gateway_ip, broadcast_ip):
+        headers = ["VM Name", "CPU", "RAM", "Memory Reservation", "SWAP"]
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "CIQ"
+        for i, h in enumerate(headers, 1):
+            cell = ws2.cell(row=1, column=i)
+            cell.value = h
+            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+            cell.font = Font(bold=True)
 
-    current_row = 1
+        for r in vm_config_records:
+            ws2.append([
+                r["VM Name"],
+                r["CPU"],
+                r["RAM"],
+                r["Memory Reservation"],
+                r["SWAP"]
+            ])
 
-    current_row = write_section(
-        ws,
-        "VM_Network_SB",
-        sb_subnet,
-        sb_records,
-        current_row,
-        gateway_ip=gateway_ip,
-        broadcast_ip=broadcast_ip
-    )
+    wb.save(output_file)
 
-    current_row = write_section(
-        ws,
-        "vMotion_Network",
-        vmotion_subnet,
-        vmotion_records,
-        current_row
-    )
-
-    wb.save(output_path)
-    print("✅ CIQ file generated successfully!")
+    print(f"✅ Output Generated: {output_file}")

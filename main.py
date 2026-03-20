@@ -1,163 +1,190 @@
-## This is the main file which take care of all other things
-
 import os
 from input_reader import read_requirements
 from node_arch_reader import (
     read_node_architecture,
     extract_mandatory_vms,
-    extract_optional_vms
+    extract_optional_vms,
+    extract_all_vm_resources
 )
 from ip_allocator import generate_sb_pool, generate_ip_pool
-from record_builder import (
-    build_mandatory_vm_records,
-    build_optional_vm_records,
-    build_vmotion_records,
-    filter_optional_vms,
-    extract_vm_number
-)
+from record_builder import *
 from ciq_writer import write_ciq
 
 
-def find_node_arch_file(input_folder):
-    for file in os.listdir(input_folder):
-        if (
-            "node architecture and resource plan" in file.lower()
-            and file.lower().endswith(".xlsx")
-        ):
-            return os.path.join(input_folder, file)
+def find_node_arch_file(folder):
+    """Locate Architecture file dynamically"""
+    for f in os.listdir(folder):
+        if "node architecture" in f.lower():
+            return os.path.join(folder, f)
+    raise Exception("Node Architecture file not found")
 
-    raise Exception("Node Architecture and Resource Plan file not found in input folder!")
+
+def extract_insteng_service(df):
+    """
+    Extract service name for insteng VM
+    (Row where VM column contains '-')
+    """
+
+    df.columns = df.columns.astype(str).str.strip()
+
+    service_col = [c for c in df.columns if c.lower() == "services"][0]
+
+    for i in range(len(df)):
+        first = df.iloc[i, 0]
+
+        if str(first).strip() == "-":
+            return str(df.loc[i, service_col])
+
+    return "Instantiation Engine"
 
 
 def main():
 
     input_folder = "input"
-    output_file = "output/CIQ_GENERATED.xlsx"
+    output_file = "output/CIQ_OUTPUT.xlsx"
+
+    req_file = os.path.join(input_folder, "Requirement Collection Sheet.xlsx")
+    arch_file = find_node_arch_file(input_folder)
 
     # -----------------------------
-    # Auto-detect files
+    # Read input parameters
     # -----------------------------
-    requirement_file = os.path.join(input_folder, "Requirement Collection Sheet.xlsx")
-    node_arch_file = find_node_arch_file(input_folder)
-
-    print(f"📄 Using Architecture File: {os.path.basename(node_arch_file)}")
-
-    # -----------------------------
-    # Read Requirements
-    # -----------------------------
-    req = read_requirements(requirement_file)
+    req = read_requirements(req_file)
 
     prefix = req["prefix"]
-    system_size = req["system_size"]
     variant = req["variant"]
-    sb_subnet = req["sb_subnet"]
-    vmotion_subnet = req["vmotion_subnet"]
-    host_count = req["host_count"]
     optional_input = req["optional_nodes"]
 
     # -----------------------------
-    # Read Architecture Sheet
+    # Load architecture sheet
     # -----------------------------
-    node_df = read_node_architecture(
-        node_arch_file,
-        system_size,
+    df = read_node_architecture(
+        arch_file,
+        req["system_size"],
         variant
     )
 
-    mandatory_vms = extract_mandatory_vms(node_df)
-    optional_vms_all = extract_optional_vms(node_df)
+    # -----------------------------
+    # Extract VM details
+    # -----------------------------
+    mandatory = extract_mandatory_vms(df)
+    optional_all = extract_optional_vms(df)
+    optional_filtered = filter_optional_vms(optional_all, optional_input)
 
     # -----------------------------
-    # Filter Optional Based on Input
+    # Generate IP pools
     # -----------------------------
-    filtered_optional_vms = filter_optional_vms(
-        optional_vms_all,
-        optional_input
-    )
+    gateway, sb_ips, broadcast = generate_sb_pool(req["sb_subnet"])
+    vmotion_ips = generate_ip_pool(req["vmotion_subnet"])
+
+    sb_records = []
+    ip_index = 0
 
     # -----------------------------
-    # Generate IP Pools
+    # OpenStack Special VM (insteng)
     # -----------------------------
-    gateway_ip, sb_ips, broadcast_ip = generate_sb_pool(sb_subnet)
-    vmotion_ips = generate_ip_pool(vmotion_subnet)
+    if variant.lower() == "openstack":
+
+        insteng_service = extract_insteng_service(df)
+
+        sb_records.append({
+            "IP Address": str(sb_ips[ip_index]),
+            "Hostname": f"{prefix}insteng",
+            "Description": insteng_service,
+            "VLAN Name": "VM_Network_SB",
+            "VM_Number": "insteng"
+        })
+
+        ip_index += 1
 
     # -----------------------------
-    # Build Mandatory Records
+    # Mandatory VMs
     # -----------------------------
-    sb_records = build_mandatory_vm_records(
+    mandatory_records = build_mandatory_vm_records(
         prefix,
-        mandatory_vms,
-        sb_ips
+        mandatory,
+        sb_ips[ip_index:]
     )
 
-    mandatory_lookup = {
-        record["VM_Number"]: record
-        for record in sb_records
+    sb_records.extend(mandatory_records)
+
+    # -----------------------------
+    # Merge Optional Services
+    # -----------------------------
+    lookup = {
+        r["VM_Number"]: r
+        for r in sb_records
+        if "VM_Number" in r
     }
 
-    # -----------------------------
-    # Process Optional VMs
-    # -----------------------------
-    new_optional_vms = []
+    new_optional = []
 
-    for vm in filtered_optional_vms:
+    for vm in optional_filtered:
 
-        vm_number = extract_vm_number(vm["vm_raw"])
+        num = extract_vm_number(vm["vm_raw"])
 
-        if vm_number in mandatory_lookup:
-            existing_record = mandatory_lookup[vm_number]
-            existing_services = existing_record["Description"]
-            new_service = str(vm["service"])
-
-            if new_service not in existing_services:
-                existing_record["Description"] = (
-                    existing_services + ", " + new_service
-                )
-
-            print(f"🔄 Merged optional service into existing VM{vm_number}")
-
+        if num in lookup:
+            # Merge service into existing VM
+            if vm["service"] not in lookup[num]["Description"]:
+                lookup[num]["Description"] += ", " + vm["service"]
         else:
-            new_optional_vms.append(vm)
+            new_optional.append(vm)
 
     # -----------------------------
-    # Build New Optional VMs
+    # Add New Optional VMs
     # -----------------------------
     optional_start_index = len(sb_records)
 
-    sb_records_optional = build_optional_vm_records(
+    optional_records = build_optional_vm_records(
         prefix,
-        new_optional_vms,
+        new_optional,
         sb_ips,
         optional_start_index
     )
 
-    sb_records.extend(sb_records_optional)
+    sb_records.extend(optional_records)
 
-    # Remove helper key before writing
-    for record in sb_records:
-        record.pop("VM_Number", None)
+    # Remove helper key
+    for r in sb_records:
+        r.pop("VM_Number", None)
 
     # -----------------------------
-    # Build vMotion Records
+    # vMotion Records
     # -----------------------------
     vmotion_records = build_vmotion_records(
         prefix,
-        host_count,
+        req["host_count"],
         vmotion_ips,
         "vMotion_Network"
     )
 
     # -----------------------------
-    # Generate CIQ
+    # VM Configuration Sheet (VMware only)
+    # -----------------------------
+    vm_config_records = None
+
+    if variant.lower() == "vmware":
+        resources = extract_all_vm_resources(df)
+
+        vm_config_records = build_vm_config_records(
+            prefix,
+            resources,
+            optional_input
+        )
+
+    # -----------------------------
+    # Write Output File
     # -----------------------------
     write_ciq(
+        req_file,
         output_file,
-        sb_subnet,
-        vmotion_subnet,
+        req["sb_subnet"],
+        req["vmotion_subnet"],
         sb_records,
         vmotion_records,
-        gateway_ip,
-        broadcast_ip
+        gateway,
+        broadcast,
+        vm_config_records
     )
 
 

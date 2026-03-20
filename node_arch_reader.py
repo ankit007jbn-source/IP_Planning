@@ -2,155 +2,158 @@ import pandas as pd
 
 
 def read_node_architecture(file_path, system_size, variant):
+    """
+    Select correct sheet based on:
+    - NetAct Configuration (system_size)
+    - Variant (VMware/OpenStack)
+
+    Also dynamically finds header row.
+    """
 
     excel_file = pd.ExcelFile(file_path)
-    available_sheets = excel_file.sheet_names
+    sheets = excel_file.sheet_names
 
-    system_size_lower = system_size.lower()
-    variant_lower = variant.lower()
+    system_size = system_size.lower()
+    variant = variant.lower()
 
     selected_sheet = None
 
-    # Select correct sheet
-    for sheet in available_sheets:
-        sheet_lower = sheet.lower()
-
-        if (
-            system_size_lower in sheet_lower
-            and variant_lower in sheet_lower
-        ):
+    # Identify correct tab
+    for sheet in sheets:
+        s = sheet.lower()
+        if system_size in s and variant in s:
             selected_sheet = sheet
             break
 
     if not selected_sheet:
-        raise Exception(
-            f"No matching sheet found.\n"
-            f"Configuration: {system_size}\n"
-            f"Variant: {variant}\n"
-            f"Available sheets: {available_sheets}"
-        )
+        raise Exception("Matching Architecture sheet not found!")
 
     print(f"✅ Selected Architecture Sheet: {selected_sheet}")
 
-    # --------------------------------------------
-    # Step 1: Read entire sheet without header
-    # --------------------------------------------
-    temp_df = pd.read_excel(
-        file_path,
-        sheet_name=selected_sheet,
-        header=None
-    )
+    # Read without header first
+    temp_df = pd.read_excel(file_path, sheet_name=selected_sheet, header=None)
 
-    header_row_index = None
+    header_row = None
 
-    # --------------------------------------------
-    # Step 2: Detect header row by looking for BOTH:
-    #   - "Services"
-    #   - "Operating System"
-    # --------------------------------------------
+    # Detect header row dynamically
     for i in range(len(temp_df)):
-
-        row_values = temp_df.iloc[i].tolist()
-        row_str = [str(cell).strip().lower() for cell in row_values]
-
-        if "services" in row_str and "operating system" in row_str:
-            header_row_index = i
+        row = [str(x).strip().lower() for x in temp_df.iloc[i]]
+        if "services" in row and "operating system" in row:
+            header_row = i
             break
 
-    if header_row_index is None:
-        raise Exception("Header row with 'Services' and 'Operating System' not found!")
+    if header_row is None:
+        raise Exception("Header row not found!")
 
-    # --------------------------------------------
-    # Step 3: Reload sheet using detected header
-    # --------------------------------------------
-    df = pd.read_excel(
-        file_path,
-        sheet_name=selected_sheet,
-        header=header_row_index
-    )
+    # Reload with correct header
+    df = pd.read_excel(file_path, sheet_name=selected_sheet, header=header_row)
 
     return df
 
 
 def extract_mandatory_vms(df):
+    """
+    Extract mandatory VMs (before OPTIONAL section)
+    """
 
     df.columns = df.columns.astype(str).str.strip()
 
-    # Find exact Services column
-    service_column = None
+    service_col = [c for c in df.columns if c.lower() == "services"][0]
 
-    for col in df.columns:
-        if col.strip().lower() == "services":
-            service_column = col
-            break
-
-    if service_column is None:
-        raise Exception("Services column not found!")
-
-    mandatory_vms = []
+    result = []
 
     for i in range(len(df)):
 
-        first_col = df.iloc[i, 0]
+        first = df.iloc[i, 0]
 
         # Stop at OPTIONAL section
-        if isinstance(first_col, str) and "optional" in first_col.lower():
+        if isinstance(first, str) and "optional" in first.lower():
             break
 
-        if isinstance(first_col, str) and first_col.strip().startswith("VM#"):
-
-            vm_raw = first_col.strip()
-            service = df.loc[i, service_column]
-
-            mandatory_vms.append({
-                "vm_raw": vm_raw,
-                "service": service
+        if isinstance(first, str) and first.startswith("VM#"):
+            result.append({
+                "vm_raw": first,
+                "service": df.loc[i, service_col]
             })
 
-    if not mandatory_vms:
-        raise Exception("No Mandatory VMs found in sheet!")
-
-    return mandatory_vms
+    return result
 
 
 def extract_optional_vms(df):
+    """
+    Extract optional VMs (after OPTIONAL section)
+    """
 
     df.columns = df.columns.astype(str).str.strip()
+    service_col = [c for c in df.columns if c.lower() == "services"][0]
 
-    service_column = None
-
-    for col in df.columns:
-        if col.strip().lower() == "services":
-            service_column = col
-            break
-
-    if service_column is None:
-        raise Exception("Services column not found!")
-
-    optional_vms = []
-    optional_section_started = False
+    result = []
+    optional = False
 
     for i in range(len(df)):
 
-        first_col = df.iloc[i, 0]
+        first = df.iloc[i, 0]
 
         # Detect OPTIONAL section start
-        if isinstance(first_col, str) and "optional" in first_col.lower():
-            optional_section_started = True
+        if isinstance(first, str) and "optional" in first.lower():
+            optional = True
             continue
 
-        if not optional_section_started:
-            continue
-
-        # Collect VM rows after OPTIONAL section
-        if isinstance(first_col, str) and first_col.strip().startswith("VM#"):
-
-            vm_raw = first_col.strip()
-            service = df.loc[i, service_column]
-
-            optional_vms.append({
-                "vm_raw": vm_raw,
-                "service": service
+        if optional and isinstance(first, str) and first.startswith("VM#"):
+            result.append({
+                "vm_raw": first,
+                "service": df.loc[i, service_col]
             })
 
-    return optional_vms
+    return result
+
+
+def extract_all_vm_resources(df):
+    """
+    Extract:
+    - CPU (vCPU)
+    - RAM (vRAM)
+    - Memory Reservation
+    - SWAP
+    - Service name
+
+    Includes both Mandatory and Optional VMs
+    """
+
+    df.columns = df.columns.astype(str).str.strip()
+
+    col_map = {}
+
+    # Map required columns dynamically
+    for c in df.columns:
+        cl = c.lower()
+        if cl == "vcpu": col_map["cpu"] = c
+        elif cl == "vram": col_map["ram"] = c
+        elif "memory reservation" in cl: col_map["mem"] = c
+        elif cl == "swap": col_map["swap"] = c
+        elif cl == "services": col_map["service"] = c
+
+    result = []
+    optional = False
+
+    for i in range(len(df)):
+
+        first = df.iloc[i, 0]
+
+        # Detect OPTIONAL section
+        if isinstance(first, str) and "optional" in first.lower():
+            optional = True
+            continue
+
+        if isinstance(first, str) and first.startswith("VM#"):
+            result.append({
+                "vm_raw": first,
+                "service": str(df.loc[i, col_map["service"]]),
+                "cpu": df.loc[i, col_map["cpu"]],
+                "ram": df.loc[i, col_map["ram"]],
+                "mem": df.loc[i, col_map["mem"]],
+                "swap": df.loc[i, col_map["swap"]],
+                "is_optional": optional
+            })
+
+    return result
