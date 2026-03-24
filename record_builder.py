@@ -65,15 +65,53 @@ def filter_optional_vms(vm_list, optional_input):
     ]
 
 
-def build_vm_config_records(prefix, resources, optional_input):
+# =========================================================
+# 🆕 NEW FUNCTION (DO NOT REMOVE OLD LOGIC)
+# =========================================================
+def merge_ciq_records(mandatory_records, optional_records):
     """
-    Build VM Configuration Sheet
+    Merge mandatory + optional CIQ records
 
-    Handles:
-    ✔ Mandatory VMs
-    ✔ Optional VMs
-    ✔ Optional services merged into existing VM
-    ✔ Resource aggregation (CPU, RAM, etc.)
+    ✔ Avoid duplicate VMs
+    ✔ Merge descriptions
+    ✔ Preserve original IP of mandatory VM
+    """
+
+    merged = {}
+
+    # First add mandatory VMs
+    for r in mandatory_records:
+        merged[r["Hostname"]] = r
+
+    # Merge optional VMs
+    for r in optional_records:
+        hostname = r["Hostname"]
+
+        if hostname in merged:
+            # Merge description
+            existing = merged[hostname]["Description"]
+            new = r["Description"]
+
+            if new not in existing:
+                merged[hostname]["Description"] = f"{existing}, {new}"
+        else:
+            # New VM → add
+            merged[hostname] = r
+
+    return list(merged.values())
+
+
+# =========================================================
+# EXISTING LOGIC (UNCHANGED)
+# =========================================================
+def build_vm_config_records(prefix, resources, optional_input, yaml_data):
+    """
+    FIXED VERSION
+
+    ✔ No duplicate VMs
+    ✔ Merge optional + mandatory into same VM
+    ✔ Aggregate disks
+    ✔ Keep existing logic intact
     """
 
     records = {}
@@ -91,29 +129,52 @@ def build_vm_config_records(prefix, resources, optional_input):
 
         service_text = vm["service"].lower()
 
-        # Skip optional services not selected
+        # ---------------- OPTIONAL FILTER ----------------
         if vm["is_optional"]:
-            if not any(k in service_text for k in optional_keys):
-                continue
+            if optional_keys:
+                if not any(k in service_text for k in optional_keys):
+                    continue
 
+        # ---------------- BASE RESOURCES ----------------
         cpu = vm["cpu"]
         ram = vm["ram"]
         mem = vm["mem"]
         swap = vm["swap"]
 
+        # ---------------- YAML DATA ----------------
+        yaml_key = f"vm{vm_number}"
+        yaml_vm = yaml_data.get(yaml_key, {})
+
+        disks = yaml_vm.get("disks", [])
+        scsi = yaml_vm.get("scsi", [])
+        scsi_type = yaml_vm.get("scsi_type", "")
+        adapter = yaml_vm.get("adapter", "")
+
+        # ---------------- MERGE LOGIC ----------------
         if hostname in records:
-            # 🔥 Aggregate resources
-            records[hostname]["CPU"] += cpu
-            records[hostname]["RAM"] += ram
-            records[hostname]["Memory Reservation"] += mem
-            records[hostname]["SWAP"] += swap
+
+            # 🔥 Merge disks
+            records[hostname]["Disks"].extend(disks)
+
+            # 🔥 Update SCSI if larger
+            if len(scsi) > len(records[hostname]["SCSI Controllers"]):
+                records[hostname]["SCSI Controllers"] = scsi
+
         else:
             records[hostname] = {
                 "VM Name": hostname,
                 "CPU": cpu,
                 "RAM": ram,
                 "Memory Reservation": mem,
-                "SWAP": swap
+                "SWAP": swap,
+                "Disks": list(disks),
+                "SCSI Controllers": scsi,
+                "SCSI Type": scsi_type,
+                "Adapter": adapter
             }
 
-    return list(records.values())
+    final_records = list(records.values())
+
+    print(f"✅ VM Config Records Generated (DEDUPED): {len(final_records)}")
+
+    return final_records

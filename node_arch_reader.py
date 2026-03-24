@@ -99,6 +99,7 @@ def extract_optional_vms(df):
             optional = True
             continue
 
+        # Only collect VM rows after OPTIONAL
         if optional and isinstance(first, str) and first.startswith("VM#"):
             result.append({
                 "vm_raw": first,
@@ -110,21 +111,16 @@ def extract_optional_vms(df):
 
 def extract_all_vm_resources(df):
     """
-    Extract:
-    - CPU (vCPU)
-    - RAM (vRAM)
-    - Memory Reservation
-    - SWAP
-    - Service name
-
-    Includes both Mandatory and Optional VMs
+    Extract all VM resources cleanly:
+    - Mandatory VMs (before OPTIONAL section)
+    - Optional VMs (after OPTIONAL section)
     """
 
     df.columns = df.columns.astype(str).str.strip()
 
     col_map = {}
 
-    # Map required columns dynamically
+    # Map required columns
     for c in df.columns:
         cl = c.lower()
         if cl == "vcpu": col_map["cpu"] = c
@@ -134,26 +130,31 @@ def extract_all_vm_resources(df):
         elif cl == "services": col_map["service"] = c
 
     result = []
-    optional = False
+
+    optional_section_started = False
 
     for i in range(len(df)):
 
         first = df.iloc[i, 0]
 
-        # Detect OPTIONAL section
+        # Detect OPTIONAL section start
         if isinstance(first, str) and "optional" in first.lower():
-            optional = True
+            optional_section_started = True
             continue
 
-        if isinstance(first, str) and first.startswith("VM#"):
+        # Only process VM rows
+        if isinstance(first, str) and first.strip().startswith("VM#"):
+
             result.append({
-                "vm_raw": first,
+                "vm_raw": first.strip(),
                 "service": str(df.loc[i, col_map["service"]]),
                 "cpu": df.loc[i, col_map["cpu"]],
                 "ram": df.loc[i, col_map["ram"]],
                 "mem": df.loc[i, col_map["mem"]],
                 "swap": df.loc[i, col_map["swap"]],
-                "is_optional": optional
+                "is_optional": optional_section_started
             })
+
+    print(f"🔍 Total VMs extracted: {len(result)}")
 
     return result

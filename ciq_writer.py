@@ -1,6 +1,7 @@
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 import shutil
+from collections import defaultdict
 
 
 def write_ciq(input_file, output_file,
@@ -8,19 +9,16 @@ def write_ciq(input_file, output_file,
               sb_records, vmotion_records,
               gateway_ip, broadcast_ip,
               vm_config_records=None):
-    """
-    Create output Excel file:
-    - Keep original sheet as first tab
-    - Add CIQ tab
-    - Add VM Configuration tab (if VMware)
-    """
 
+    # Copy input → output
     shutil.copy(input_file, output_file)
 
     wb = load_workbook(output_file)
 
-    # ---------------- CIQ TAB ----------------
-    ws = wb.create_sheet("CIQ")  # Added AFTER original sheet
+    # =========================
+    # CIQ TAB
+    # =========================
+    ws = wb.create_sheet("CIQ")
 
     headers = ["IP Address", "Hostname", "Description", "VLAN Name"]
 
@@ -32,10 +30,8 @@ def write_ciq(input_file, output_file,
         cell.fill = PatternFill(start_color="92D050", fill_type="solid")
         cell.font = Font(bold=True)
 
-    # Gateway
     ws.append([gateway_ip, "Gateway", "Default Gateway", "VM_Network_SB"])
 
-    # VM records
     for r in sb_records:
         ws.append([
             r["IP Address"],
@@ -44,15 +40,22 @@ def write_ciq(input_file, output_file,
             r["VLAN Name"]
         ])
 
-    # Broadcast
     ws.append([broadcast_ip, "Broadcast", "Broadcast Address", "VM_Network_SB"])
 
-    # ---------------- VM CONFIG TAB ----------------
+    # =========================
+    # VM CONFIGURATION SHEET
+    # =========================
     if vm_config_records:
 
         ws2 = wb.create_sheet("VM Configuration Sheet")
 
-        headers = ["VM Name", "CPU", "RAM", "Memory Reservation", "SWAP"]
+        headers = [
+            "VM Name", "CPU", "RAM", "Memory Reservation", "SWAP",
+            "SCSI Controllers", "SCSI Type",
+            "Hard Disk -1", "Hard Disk -2", "Hard Disk -3",
+            "Hard Disk -4", "Hard Disk -5", "Hard Disk -6",
+            "Network Adapter"
+        ]
 
         for i, h in enumerate(headers, 1):
             cell = ws2.cell(row=1, column=i)
@@ -60,14 +63,75 @@ def write_ciq(input_file, output_file,
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
             cell.font = Font(bold=True)
 
+        # =========================
+        # DATA ROWS
+        # =========================
         for r in vm_config_records:
+
+            # -------- SCSI --------
+            scsi_list = r.get("SCSI Controllers", []) or []
+            ids = [str(s.get("id", 0)) for s in scsi_list]
+
+            scsi_text = f"{len(ids)} ({','.join(ids)})" if ids else ""
+
+            # -------- DISKS (GROUPED + MULTILINE) --------
+            disks = r.get("Disks", []) or []
+
+            grouped = defaultdict(list)
+
+            for d in disks:
+                name = d.get("disk_name", "")
+
+                # group key (db_arc_disk1 → db_arc)
+                if "_disk" in name:
+                    base = name.split("_disk")[0]
+                else:
+                    base = name
+
+                grouped[base].append(d)
+
+            disk_cols = []
+
+            for base, items in grouped.items():
+
+                lines = []
+
+                for d in items:
+                    name = d.get("disk_name", "")
+                    size = d.get("size", 0)
+                    ctrl = d.get("controller", 0)
+                    scsi = d.get("scsi_id", 0)
+                    mode = d.get("mode", "")
+
+                    line = f"{name} {size}GB ({ctrl}:{scsi}) {mode}"
+                    lines.append(line)
+
+                # multiline cell
+                disk_cols.append("\n".join(lines))
+
+            # limit to 6 disk groups
+            disk_cols = disk_cols[:6]
+
+            while len(disk_cols) < 6:
+                disk_cols.append("")
+
+            # -------- WRITE ROW --------
             ws2.append([
                 r["VM Name"],
                 r["CPU"],
                 r["RAM"],
                 r["Memory Reservation"],
-                r["SWAP"]
+                r["SWAP"],
+                scsi_text,
+                r.get("SCSI Type", ""),
+                *disk_cols,
+                r.get("Adapter", "")
             ])
+
+            # -------- ENABLE WRAP TEXT --------
+            current_row = ws2.max_row
+            for col in range(8, 14):  # disk columns
+                ws2.cell(row=current_row, column=col).alignment = Alignment(wrap_text=True)
 
     wb.save(output_file)
 

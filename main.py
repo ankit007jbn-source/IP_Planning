@@ -9,6 +9,8 @@ from node_arch_reader import (
 from ip_allocator import generate_sb_pool, generate_ip_pool
 from record_builder import *
 from ciq_writer import write_ciq
+from yaml_reader import find_optional_yamls, parse_optional_yaml
+from yaml_reader import find_vmware_yaml, load_yaml, parse_vmware_yaml
 
 
 def find_node_arch_file(folder):
@@ -20,18 +22,13 @@ def find_node_arch_file(folder):
 
 
 def extract_insteng_service(df):
-    """
-    Extract service name for insteng VM
-    (Row where VM column contains '-')
-    """
+    """Extract service name for insteng VM"""
 
     df.columns = df.columns.astype(str).str.strip()
-
     service_col = [c for c in df.columns if c.lower() == "services"][0]
 
     for i in range(len(df)):
         first = df.iloc[i, 0]
-
         if str(first).strip() == "-":
             return str(df.loc[i, service_col])
 
@@ -81,7 +78,7 @@ def main():
     ip_index = 0
 
     # -----------------------------
-    # OpenStack Special VM (insteng)
+    # OpenStack Special VM
     # -----------------------------
     if variant.lower() == "openstack":
 
@@ -109,10 +106,10 @@ def main():
     sb_records.extend(mandatory_records)
 
     # -----------------------------
-    # Merge Optional Services
+    # Merge Optional Services (FIXED)
     # -----------------------------
     lookup = {
-        r["VM_Number"]: r
+        str(r["VM_Number"]).strip(): r
         for r in sb_records
         if "VM_Number" in r
     }
@@ -121,19 +118,23 @@ def main():
 
     for vm in optional_filtered:
 
-        num = extract_vm_number(vm["vm_raw"])
+        num = extract_vm_number(vm["vm_raw"]).strip()
 
         if num in lookup:
-            # Merge service into existing VM
-            if vm["service"] not in lookup[num]["Description"]:
-                lookup[num]["Description"] += ", " + vm["service"]
+            existing_desc = lookup[num]["Description"]
+            new_service = str(vm["service"])
+
+            if new_service not in existing_desc:
+                lookup[num]["Description"] = f"{existing_desc}, {new_service}"
         else:
             new_optional.append(vm)
 
+    print(f"✅ After merge → Mandatory: {len(mandatory_records)}, New Optional: {len(new_optional)}")
+
     # -----------------------------
-    # Add New Optional VMs
+    # Add New Optional VMs (FIXED IP LOGIC)
     # -----------------------------
-    optional_start_index = len(sb_records)
+    optional_start_index = len(mandatory_records)
 
     optional_records = build_optional_vm_records(
         prefix,
@@ -159,21 +160,72 @@ def main():
     )
 
     # -----------------------------
-    # VM Configuration Sheet (VMware only)
+    # VM Configuration Sheet
     # -----------------------------
     vm_config_records = None
 
     if variant.lower() == "vmware":
+
         resources = extract_all_vm_resources(df)
+        yaml_folder = os.path.join(input_folder, "nipe-conf")
+
+        # Base YAML
+        base_yaml_file = find_vmware_yaml(
+            yaml_folder,
+            req["system_size"]
+        )
+
+        print(f"\n📄 Base YAML: {os.path.basename(base_yaml_file)}")
+
+        base_yaml = load_yaml(base_yaml_file)
+        yaml_data_map = parse_vmware_yaml(base_yaml)
+
+        # Optional YAMLs (FIXED FILTER)
+        optional_yaml_files = [
+            f for f in find_optional_yamls(
+                yaml_folder,
+                optional_input,
+                req["system_size"],
+                variant
+            )
+            if "openstack" not in os.path.basename(f).lower()
+        ]
+
+        print("\n📦 Optional YAMLs:")
+        for f in optional_yaml_files:
+            print("  →", os.path.basename(f))
+
+        compute_map = {
+            "compute1": "vm150",
+            "compute2": "vm151",
+            "compute3": "vm152"
+        }
+
+        # Merge optional YAML
+        for file in optional_yaml_files:
+
+            opt_yaml = load_yaml(file)
+            opt_data = parse_optional_yaml(opt_yaml)
+
+            for vm_name, data in opt_data.items():
+
+                mapped_vm = compute_map.get(vm_name, vm_name)
+
+                if mapped_vm in yaml_data_map:
+                    yaml_data_map[mapped_vm]["disks"].extend(data.get("disks", []))
+                    yaml_data_map[mapped_vm]["scsi"] = data.get("scsi", [])
+                else:
+                    yaml_data_map[mapped_vm] = data
 
         vm_config_records = build_vm_config_records(
             prefix,
             resources,
-            optional_input
+            optional_input,
+            yaml_data_map
         )
 
     # -----------------------------
-    # Write Output File
+    # Write Output
     # -----------------------------
     write_ciq(
         req_file,
