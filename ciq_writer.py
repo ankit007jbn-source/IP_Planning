@@ -1,5 +1,5 @@
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill
 import shutil
 from collections import defaultdict
 
@@ -8,11 +8,10 @@ def write_ciq(input_file, output_file,
               sb_subnet, vmotion_subnet,
               sb_records, vmotion_records,
               gateway_ip, broadcast_ip,
-              vm_config_records=None):
+              vm_config_records=None,
+              drs_rules=None):   # ✅ NEW PARAM
 
-    # Copy input → output
     shutil.copy(input_file, output_file)
-
     wb = load_workbook(output_file)
 
     # =========================
@@ -53,7 +52,7 @@ def write_ciq(input_file, output_file,
             "VM Name", "CPU", "RAM", "Memory Reservation", "SWAP",
             "SCSI Controllers", "SCSI Type",
             "Hard Disk -1", "Hard Disk -2", "Hard Disk -3",
-            "Hard Disk -4", "Hard Disk -5", "Hard Disk -6",
+            "Hard Disk -4", "Hard Disk -5", "Hard Disk -6",  # ✅ extended
             "Network Adapter"
         ]
 
@@ -70,24 +69,19 @@ def write_ciq(input_file, output_file,
 
             # -------- SCSI --------
             scsi_list = r.get("SCSI Controllers", []) or []
+
             ids = [str(s.get("id", 0)) for s in scsi_list]
 
             scsi_text = f"{len(ids)} ({','.join(ids)})" if ids else ""
 
-            # -------- DISKS (GROUPED + MULTILINE) --------
+            # -------- DISKS GROUPING --------
             disks = r.get("Disks", []) or []
 
             grouped = defaultdict(list)
 
             for d in disks:
                 name = d.get("disk_name", "")
-
-                # group key (db_arc_disk1 → db_arc)
-                if "_disk" in name:
-                    base = name.split("_disk")[0]
-                else:
-                    base = name
-
+                base = name.split("_disk")[0] if "_disk" in name else name
                 grouped[base].append(d)
 
             disk_cols = []
@@ -101,15 +95,18 @@ def write_ciq(input_file, output_file,
                     size = d.get("size", 0)
                     ctrl = d.get("controller", 0)
                     scsi = d.get("scsi_id", 0)
-                    mode = d.get("mode", "")
+                    mode = d.get("disk_mode", "")
 
-                    line = f"{name} {size}GB ({ctrl}:{scsi}) {mode}"
+                    line = f"{name} {size}GB ({ctrl}:{scsi})"
+                    if mode:
+                        line += f" {mode}"
+
                     lines.append(line)
 
-                # multiline cell
+                # multi-line inside one cell
                 disk_cols.append("\n".join(lines))
 
-            # limit to 6 disk groups
+            # limit to 6 columns
             disk_cols = disk_cols[:6]
 
             while len(disk_cols) < 6:
@@ -128,10 +125,28 @@ def write_ciq(input_file, output_file,
                 r.get("Adapter", "")
             ])
 
-            # -------- ENABLE WRAP TEXT --------
-            current_row = ws2.max_row
-            for col in range(8, 14):  # disk columns
-                ws2.cell(row=current_row, column=col).alignment = Alignment(wrap_text=True)
+    # =========================
+    # DRS RULES TAB (NEW)
+    # =========================
+    if drs_rules:
+
+        ws3 = wb.create_sheet("DRS Rules")
+
+        headers = ["Rule Name", "Type", "VM1", "VM2"]
+
+        for i, h in enumerate(headers, 1):
+            cell = ws3.cell(row=1, column=i)
+            cell.value = h
+            cell.fill = PatternFill(start_color="ADD8E6", fill_type="solid")
+            cell.font = Font(bold=True)
+
+        for r in drs_rules:
+            ws3.append([
+                r.get("Rule Name", ""),
+                r.get("Type", ""),
+                r.get("VM1", ""),
+                r.get("VM2", "")
+            ])
 
     wb.save(output_file)
 

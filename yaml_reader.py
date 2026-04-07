@@ -213,3 +213,22 @@ def parse_optional_yaml(yaml_data):
     print(f"📦 Optional YAML Parsed VMs: {len(vm_data)}")
 
     return vm_data
+
+
+def parse_drs_rules(yaml_data):
+
+    """
+    Read DRS rules from yml file
+    """
+
+    rules = []
+
+    for r in yaml_data.get("drs_rule", []):
+        rules.append({
+            "Rule Name": r.get("drs_rule_name", ""),
+            "Type": r.get("type", ""),
+            "VM1": r.get("vm1", ""),
+            "VM2": r.get("vm2", "")
+        })
+
+    return rules

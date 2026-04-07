@@ -105,14 +105,6 @@ def merge_ciq_records(mandatory_records, optional_records):
 # EXISTING LOGIC (UNCHANGED)
 # =========================================================
 def build_vm_config_records(prefix, resources, optional_input, yaml_data):
-    """
-    FIXED VERSION
-
-    ✔ No duplicate VMs
-    ✔ Merge optional + mandatory into same VM
-    ✔ Aggregate disks
-    ✔ Keep existing logic intact
-    """
 
     records = {}
 
@@ -122,6 +114,24 @@ def build_vm_config_records(prefix, resources, optional_input, yaml_data):
         if x.strip()
     ]
 
+    # ---------------- STEP 1: CREATE ALL VMs FROM YAML FIRST ----------------
+    for yaml_key, yaml_vm in yaml_data.items():
+
+        hostname = f"{prefix}{yaml_key}"
+
+        records[hostname] = {
+            "VM Name": hostname,
+            "CPU": "",
+            "RAM": "",
+            "Memory Reservation": "",
+            "SWAP": "",
+            "Disks": yaml_vm.get("disks", []).copy(),   # 🔥 IMPORTANT
+            "SCSI Controllers": yaml_vm.get("scsi", []),
+            "SCSI Type": yaml_vm.get("scsi_type", ""),
+            "Adapter": yaml_vm.get("adapter", "")
+        }
+
+    # ---------------- STEP 2: OVERLAY EXCEL DATA ----------------
     for vm in resources:
 
         vm_number = extract_vm_number(vm["vm_raw"])
@@ -129,52 +139,34 @@ def build_vm_config_records(prefix, resources, optional_input, yaml_data):
 
         service_text = vm["service"].lower()
 
-        # ---------------- OPTIONAL FILTER ----------------
+        # OPTIONAL FILTER
         if vm["is_optional"]:
             if optional_keys:
                 if not any(k in service_text for k in optional_keys):
                     continue
 
-        # ---------------- BASE RESOURCES ----------------
-        cpu = vm["cpu"]
-        ram = vm["ram"]
-        mem = vm["mem"]
-        swap = vm["swap"]
-
-        # ---------------- YAML DATA ----------------
-        yaml_key = f"vm{vm_number}"
-        yaml_vm = yaml_data.get(yaml_key, {})
-
-        disks = yaml_vm.get("disks", [])
-        scsi = yaml_vm.get("scsi", [])
-        scsi_type = yaml_vm.get("scsi_type", "")
-        adapter = yaml_vm.get("adapter", "")
-
-        # ---------------- MERGE LOGIC ----------------
-        if hostname in records:
-
-            # 🔥 Merge disks
-            records[hostname]["Disks"].extend(disks)
-
-            # 🔥 Update SCSI if larger
-            if len(scsi) > len(records[hostname]["SCSI Controllers"]):
-                records[hostname]["SCSI Controllers"] = scsi
-
-        else:
+        # Ensure VM exists
+        if hostname not in records:
             records[hostname] = {
                 "VM Name": hostname,
-                "CPU": cpu,
-                "RAM": ram,
-                "Memory Reservation": mem,
-                "SWAP": swap,
-                "Disks": list(disks),
-                "SCSI Controllers": scsi,
-                "SCSI Type": scsi_type,
-                "Adapter": adapter
+                "CPU": "",
+                "RAM": "",
+                "Memory Reservation": "",
+                "SWAP": "",
+                "Disks": [],
+                "SCSI Controllers": [],
+                "SCSI Type": "",
+                "Adapter": ""
             }
+
+        # Update resources
+        records[hostname]["CPU"] = vm["cpu"]
+        records[hostname]["RAM"] = vm["ram"]
+        records[hostname]["Memory Reservation"] = vm["mem"]
+        records[hostname]["SWAP"] = vm["swap"]
 
     final_records = list(records.values())
 
-    print(f"✅ VM Config Records Generated (DEDUPED): {len(final_records)}")
+    print(f"✅ FINAL VM COUNT: {len(final_records)}")
 
     return final_records
